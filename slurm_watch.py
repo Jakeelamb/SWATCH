@@ -12,6 +12,7 @@ import paramiko
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 import argparse
 from dataclasses import dataclass
+import queue
 
 # Define a custom style theme class
 class DarkTheme:
@@ -37,10 +38,10 @@ class DarkTheme:
         'H': TEXT_COLOR
     }
     
-    # Updated fonts and dimensions
-    MAIN_FONT = ("Helvetica Neue", 11)  # macOS-like font
-    HEADER_FONT = ("Helvetica Neue", 12, "bold")  # For consistency
-    SMALL_FONT = ("Helvetica Neue", 10)
+    # Updated fonts and dimensions - Increased font sizes
+    MAIN_FONT = ("Helvetica Neue", 12)  # Increased from 11
+    HEADER_FONT = ("Helvetica Neue", 13, "bold")  # Increased from 12
+    SMALL_FONT = ("Helvetica Neue", 11)  # Increased from 10
     
     # Updated spacing
     PADDING = 8  # Tighter spacing
@@ -311,8 +312,11 @@ class JobInfo:
 class HPCJobMonitor:
     def __init__(self, root, test_mode=False):
         self.root = root
-        self.root.geometry("800x500")
+        self.root.geometry("800x550")  # Slightly increased height for legend
         self.root.configure(bg=DarkTheme.BG_COLOR)
+        
+        # Set window title
+        self.root.title("SWATCH - (Slurm Job Watcher)")
         
         # Add test_mode
         self.test_mode = test_mode
@@ -320,6 +324,15 @@ class HPCJobMonitor:
         # Initialize auto-refresh variables first
         self.auto_refresh = tk.BooleanVar(value=True)
         self.refresh_interval = 30  # seconds
+        self.refresh_intervals = {
+            "5 seconds": 5,
+            "30 seconds": 30,
+            "1 minute": 60,
+            "5 minutes": 300,
+            "15 minutes": 900,
+            "1 hour": 3600
+        }
+        self.refresh_interval_var = tk.StringVar(value="30 seconds")
         self.refresh_timer = None
         
         # Authentication
@@ -328,6 +341,10 @@ class HPCJobMonitor:
         self.hostname = ""
         self.authenticated = False
         self.ssh_client = None
+        
+        # Add thread safety and result queue
+        self.ssh_lock = threading.Lock()
+        self.result_queue = queue.Queue()
         
         # Load saved credentials
         self.config_file = os.path.join(os.path.expanduser("~"), ".hpcjobmonitor", "config.json")
@@ -349,12 +366,45 @@ class HPCJobMonitor:
         header_frame.pack(fill=tk.X, pady=5)
         
         self.user_label = ttk.Label(header_frame, text="Not logged in", 
-                                  background=DarkTheme.SECONDARY_BG)
+                                  background=DarkTheme.SECONDARY_BG,
+                                  font=DarkTheme.MAIN_FONT)
         self.user_label.pack(side=tk.LEFT, padx=5)
         
         self.last_updated = ttk.Label(header_frame, text="Last updated: Never",
-                                    background=DarkTheme.SECONDARY_BG)
+                                    background=DarkTheme.SECONDARY_BG,
+                                    font=DarkTheme.MAIN_FONT)
         self.last_updated.pack(side=tk.RIGHT, padx=5)
+        
+        # Add legend above the job tree
+        legend_frame = tk.Frame(self.main_frame, bg=DarkTheme.SECONDARY_BG)
+        legend_frame.pack(fill=tk.X, pady=5)
+        
+        # Create legend items
+        legend_items = [
+            ("Running", DarkTheme.RUNNING_COLOR),
+            ("Pending", DarkTheme.PENDING_COLOR),
+            ("Completed", DarkTheme.COMPLETED_COLOR),
+            ("Failed", DarkTheme.FAILED_COLOR)
+        ]
+        
+        # Add legend label
+        ttk.Label(legend_frame, text="Legend:", 
+                background=DarkTheme.SECONDARY_BG,
+                font=DarkTheme.MAIN_FONT).pack(side=tk.LEFT, padx=5)
+        
+        # Add color indicators and labels
+        for text, color in legend_items:
+            # Create a small colored square
+            indicator = tk.Canvas(legend_frame, width=12, height=12, bg=DarkTheme.SECONDARY_BG, 
+                                highlightthickness=0)
+            indicator.pack(side=tk.LEFT, padx=2)
+            indicator.create_rectangle(0, 0, 12, 12, fill=color, outline="")
+            
+            # Add label
+            ttk.Label(legend_frame, text=text, 
+                    background=DarkTheme.SECONDARY_BG,
+                    foreground=color,
+                    font=DarkTheme.MAIN_FONT).pack(side=tk.LEFT, padx=5)
         
         # Job tree
         self.tree = CustomTreeview(self.main_frame, 
@@ -370,8 +420,26 @@ class HPCJobMonitor:
         ttk.Button(control_frame, text="Refresh", command=self.refresh_jobs).pack(side=tk.LEFT, padx=5)
         self.login_btn = ttk.Button(control_frame, text="Login", command=self.handle_login)
         self.login_btn.pack(side=tk.LEFT, padx=5)
-        ttk.Checkbutton(control_frame, text="Auto-refresh", variable=self.auto_refresh,
-                       command=self.toggle_auto_refresh).pack(side=tk.LEFT, padx=5)
+        
+        # Auto-refresh checkbox
+        auto_refresh_frame = tk.Frame(control_frame, bg=DarkTheme.SECONDARY_BG)
+        auto_refresh_frame.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Checkbutton(auto_refresh_frame, text="Auto-refresh", variable=self.auto_refresh,
+                       command=self.toggle_auto_refresh).pack(side=tk.LEFT)
+        
+        # Refresh interval dropdown
+        ttk.Label(auto_refresh_frame, text="Interval:", 
+                background=DarkTheme.SECONDARY_BG,
+                font=DarkTheme.MAIN_FONT).pack(side=tk.LEFT, padx=(10, 2))
+        
+        refresh_dropdown = ttk.Combobox(auto_refresh_frame, 
+                                      textvariable=self.refresh_interval_var,
+                                      values=list(self.refresh_intervals.keys()),
+                                      width=10,
+                                      state="readonly")
+        refresh_dropdown.pack(side=tk.LEFT)
+        refresh_dropdown.bind("<<ComboboxSelected>>", self.update_refresh_interval)
     
     def init_tree_columns(self):
         """Initialize tree columns and headings"""
@@ -616,31 +684,33 @@ class HPCJobMonitor:
 12353|awaiting_resources|PENDING|00:00|8|512|1024000"""
             return ""
         
-        try:
-            # Check if we have an active connection
-            if not self.ssh_client or not self.ssh_client.get_transport() or not self.ssh_client.get_transport().is_active():
-                # Reconnect if needed
-                if not self.test_connection():
-                    print("SSH connection lost and reconnection failed")
-                    self.update_login_status(False)
-                    self.authenticated = False
-                    return None
-            
-            # Execute command
-            stdin, stdout, stderr = self.ssh_client.exec_command(command)
-            output = stdout.read().decode()
-            error = stderr.read().decode()
-            
-            if error and not output:
-                print(f"Command error: {error}")
-                return None
+        # Use lock for thread safety
+        with self.ssh_lock:
+            try:
+                # Check if we have an active connection
+                if not self.ssh_client or not self.ssh_client.get_transport() or not self.ssh_client.get_transport().is_active():
+                    # Reconnect if needed
+                    if not self.test_connection():
+                        print("SSH connection lost and reconnection failed")
+                        self.update_login_status(False)
+                        self.authenticated = False
+                        return None
                 
-            return output
-        except Exception as e:
-            print(f"Error running remote command: {e}")
-            # Try to reconnect on next command
-            self.disconnect()
-            return None
+                # Execute command
+                stdin, stdout, stderr = self.ssh_client.exec_command(command)
+                output = stdout.read().decode()
+                error = stderr.read().decode()
+                
+                if error and not output:
+                    print(f"Command error: {error}")
+                    return None
+                    
+                return output
+            except Exception as e:
+                print(f"Error running remote command: {e}")
+                # Try to reconnect on next command
+                self.disconnect()
+                return None
     
     def get_jobs(self):
         """Get job information from the HPC system"""
@@ -684,53 +754,69 @@ class HPCJobMonitor:
                 self.handle_login()
             return
         
-        # Clear current items
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        
+        # Use threading for job refresh to keep UI responsive
+        threading.Thread(target=self._async_refresh_jobs, daemon=True).start()
+        self.root.after(100, self._check_refresh_result)
+    
+    def _async_refresh_jobs(self):
+        """Asynchronously fetch job data"""
         try:
             jobs = self.get_jobs()
-            status_counts = {"running": 0, "pending": 0, "completed": 0, "failed": 0}
-            
-            # Create tags for different status colors
-            self.tree.tag_configure('running', foreground=DarkTheme.RUNNING_COLOR)
-            self.tree.tag_configure('pending', foreground=DarkTheme.PENDING_COLOR)
-            self.tree.tag_configure('completed', foreground=DarkTheme.COMPLETED_COLOR)
-            self.tree.tag_configure('failed', foreground=DarkTheme.FAILED_COLOR)
-            
-            for job in jobs:
-                tag = job.tag
-                status_counts[tag] += 1
-                
-                # Insert job with appropriate tag
-                self.tree.insert("", "end",
-                    values=(
-                        job.job_id,
-                        job.name,
-                        job.status,
-                        job.time,
-                        job.nodes,
-                        job.cpus,
-                        job.memory
-                    ),
-                    tags=(tag,)
-                )
-            
-            # Update summary with Unicode box drawing characters
-            summary = (f"Running: {status_counts['running']:2d} │ "
-                      f"Pending: {status_counts['pending']:2d} │ "
-                      f"Completed: {status_counts['completed']:2d} │ "
-                      f"Failed: {status_counts['failed']:2d}")
-            self.last_updated.config(text=f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
-            
-            # Update timestamp
-            now = datetime.now().strftime("%H:%M:%S")
-            self.user_label.config(text=f"{self.username}@{self.hostname}")
-            
+            self.result_queue.put(("refresh", jobs))
         except Exception as e:
-            print(f"Error refreshing jobs: {e}")
-            messagebox.showerror("Error", f"Failed to refresh jobs: {e}")
+            print(f"Error in async refresh: {e}")
+            self.result_queue.put(("refresh", None))
     
+    def _check_refresh_result(self):
+        """Check for results from the async job refresh"""
+        try:
+            while not self.result_queue.empty():
+                action, jobs = self.result_queue.get_nowait()
+                if action == "refresh" and jobs is not None:
+                    # Clear current items
+                    for item in self.tree.get_children():
+                        self.tree.delete(item)
+                    
+                    status_counts = {"running": 0, "pending": 0, "completed": 0, "failed": 0}
+                    
+                    # Create tags for different status colors
+                    self.tree.tag_configure('running', foreground=DarkTheme.RUNNING_COLOR)
+                    self.tree.tag_configure('pending', foreground=DarkTheme.PENDING_COLOR)
+                    self.tree.tag_configure('completed', foreground=DarkTheme.COMPLETED_COLOR)
+                    self.tree.tag_configure('failed', foreground=DarkTheme.FAILED_COLOR)
+                    
+                    for job in jobs:
+                        tag = job.tag
+                        status_counts[tag] += 1
+                        
+                        # Insert job with appropriate tag
+                        self.tree.insert("", "end",
+                            values=(
+                                job.job_id,
+                                job.name,
+                                job.status,
+                                job.time,
+                                job.nodes,
+                                job.cpus,
+                                job.memory
+                            ),
+                            tags=(tag,)
+                        )
+                    
+                    # Update summary with Unicode box drawing characters
+                    summary = (f"Running: {status_counts['running']:2d} │ "
+                              f"Pending: {status_counts['pending']:2d} │ "
+                              f"Completed: {status_counts['completed']:2d} │ "
+                              f"Failed: {status_counts['failed']:2d}")
+                    self.last_updated.config(text=f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
+                    
+                    # Update timestamp
+                    now = datetime.now().strftime("%H:%M:%S")
+                    self.user_label.config(text=f"{self.username}@{self.hostname}")
+                    return
+        except queue.Empty:
+            self.root.after(100, self._check_refresh_result)
+
     def toggle_auto_refresh(self):
         """Toggle auto-refresh on/off"""
         if self.auto_refresh.get():
@@ -873,6 +959,17 @@ class HPCJobMonitor:
         except Exception as e:
             print(f"Error disconnecting: {e}")
 
+    def update_refresh_interval(self, event=None):
+        """Update the refresh interval based on dropdown selection"""
+        selected = self.refresh_interval_var.get()
+        if selected in self.refresh_intervals:
+            self.refresh_interval = self.refresh_intervals[selected]
+            
+            # Restart auto-refresh with new interval if enabled
+            if self.auto_refresh.get():
+                self.stop_auto_refresh()
+                self.start_auto_refresh()
+
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Slurm Watch - A job monitoring tool')
@@ -903,7 +1000,19 @@ def main():
             )
             return
     
+    # Add queue import
+    try:
+        import queue
+    except ImportError:
+        messagebox.showerror(
+            "Missing Dependency",
+            "Python queue module is required.\n"
+            "This should be part of the standard library."
+        )
+        return
+    
     root = tk.Tk()
+    root.title("SWATCH - (Slurm Job Watcher)")  # Set window title
     app = HPCJobMonitor(root, test_mode=args.test)
     
     # Center the window on screen
