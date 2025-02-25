@@ -76,13 +76,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 🎉 Fun Facts
 
 - The name "SWATCH" comes from "Slurm Watch" (not the watch company! 😉)
-- The color scheme was inspired by modern code editors
-- It's probably the most stylish Slurm monitor you'll ever use! 🎨
 
 ## 🐛 Known Issues
 
-- May cause increased productivity
-- Might make other monitoring tools look boring
-- Could lead to excessive job submission due to how fun it is to watch them run
 
 Remember: Happy monitoring! 🚀
