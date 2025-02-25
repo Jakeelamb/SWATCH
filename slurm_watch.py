@@ -148,19 +148,32 @@ class CustomStyle(ttk.Style):
         self.configure('TEntry', fieldbackground=DarkTheme.SECONDARY_BG, foreground=DarkTheme.TEXT_COLOR)
 
 class LoginDialog(simpledialog.Dialog):
-    def __init__(self, parent, title=None, default_username=""):
+    def __init__(self, parent, title=None, default_username="", default_hostname="login.cluster.edu"):
         self.default_username = default_username
+        self.default_hostname = default_hostname
         self.bg_color = DarkTheme.BG_COLOR
         self.text_color = DarkTheme.TEXT_COLOR
+        
+        # Ensure dialog is created as a Toplevel window
+        self.root = parent
         super().__init__(parent, title)
     
     def body(self, master):
         master.configure(bg=self.bg_color)
         
-        # Set dialog size and position
-        self.geometry(f"350x200+{self.winfo_rootx()+50}+{self.winfo_rooty()+50}")
+        # Calculate position relative to main window
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 175
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 100
         
-        # Create frames
+        # Set dialog size and position
+        self.geometry(f"350x200+{x}+{y}")
+        
+        # Ensure dialog stays on top
+        self.transient(self.root)
+        self.lift()
+        self.focus_force()
+        
+        # Rest of the existing body code...
         frame = RoundedFrame(master, width=330, height=180, corner_radius=DarkTheme.CORNER_RADIUS)
         frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
         
@@ -184,11 +197,12 @@ class LoginDialog(simpledialog.Dialog):
         
         self.hostname_entry = ttk.Entry(content_frame, width=25)
         self.hostname_entry.grid(row=2, column=1, pady=5, padx=5)
-        self.hostname_entry.insert(0, "login.cluster.edu")  # Default hostname
+        self.hostname_entry.insert(0, self.default_hostname)
         
         self.save_credentials = tk.BooleanVar(value=False)
         ttk.Checkbutton(content_frame, text="Remember credentials", 
-                      variable=self.save_credentials).grid(
+                      variable=self.save_credentials,
+                      style="TCheckbutton").grid(
             row=3, column=0, columnspan=2, pady=5, padx=5, sticky=tk.W)
         
         return self.username_entry  # Initial focus
@@ -297,322 +311,288 @@ class JobInfo:
 class HPCJobMonitor:
     def __init__(self, root, test_mode=False):
         self.root = root
-        self.test_mode = test_mode
-        
-        # Remove default title bar and window decorations
-        self.root.overrideredirect(True)
         self.root.geometry("800x500")
-        self.root.resizable(True, True)
         self.root.configure(bg=DarkTheme.BG_COLOR)
         
-        # Create custom title bar
-        self.title_bar = tk.Frame(self.root, bg=DarkTheme.SECONDARY_BG, height=30)
-        self.title_bar.pack(fill=tk.X)
+        # Add test_mode
+        self.test_mode = test_mode
         
-        # Add title label
-        ttk.Label(
-            self.title_bar,
-            text="Slurm Job Watch",
-            foreground=DarkTheme.TEXT_COLOR,
-            background=DarkTheme.SECONDARY_BG,
-            font=("JetBrains Mono", 12, "bold")
-        ).pack(side=tk.LEFT, padx=10, pady=5)
+        # Initialize auto-refresh variables first
+        self.auto_refresh = tk.BooleanVar(value=True)
+        self.refresh_interval = 30  # seconds
+        self.refresh_timer = None
         
-        # Add close button
-        close_btn = ttk.Button(
-            self.title_bar,
-            text="×",
-            command=self.on_closing,
-            style="TButton",
-            width=2
-        )
-        close_btn.pack(side=tk.RIGHT, padx=5)
-        
-        # Bind dragging functionality
-        self.title_bar.bind("<Button-1>", self.start_drag)
-        self.title_bar.bind("<B1-Motion>", self.drag_window)
-        
-        # Apply theme
-        CustomStyle()
-        
-        # Authentication variables
+        # Authentication
         self.username = ""
         self.password = ""
         self.hostname = ""
         self.authenticated = False
+        self.ssh_client = None
         
-        # Load saved credentials if available
-        self.config_dir = os.path.join(os.path.expanduser("~"), ".hpcjobmonitor")
-        self.config_file = os.path.join(self.config_dir, "config.json")
-        self.load_credentials()
+        # Load saved credentials
+        self.config_file = os.path.join(os.path.expanduser("~"), ".hpcjobmonitor", "config.json")
+        self._load_credentials_async()
         
-        # Create status icons
-        self.status_icons = {
-            "Running": create_circle_image(DarkTheme.RUNNING_COLOR),
-            "Pending": create_circle_image(DarkTheme.PENDING_COLOR),
-            "Completed": create_circle_image(DarkTheme.COMPLETED_COLOR),
-            "Failed": create_circle_image(DarkTheme.FAILED_COLOR)
-        }
+        # Build GUI
+        self.setup_gui()
         
-        # Create main frame with rounded corners
-        self.main_container = tk.Frame(self.root, bg=DarkTheme.BG_COLOR)
-        self.main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        self.main_frame = RoundedFrame(self.main_container, bg=DarkTheme.SECONDARY_BG)
-        self.main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Create content frame inside the rounded canvas
-        self.content_frame = tk.Frame(self.main_frame, bg=DarkTheme.SECONDARY_BG)
-        self.content_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER, relwidth=0.95, relheight=0.95)
-        
-        # Modify header frame
-        header_frame = tk.Frame(self.content_frame, bg=DarkTheme.SECONDARY_BG)
-        header_frame.pack(fill=tk.X, pady=(5, 10), padx=DarkTheme.PADDING)
-        
-        # User status (left side)
-        self.user_label = ttk.Label(
-            header_frame,
-            text="Not logged in",
-            font=DarkTheme.SMALL_FONT,
-            background=DarkTheme.SECONDARY_BG
-        )
-        self.user_label.pack(side=tk.LEFT)
-        
-        # Last updated (right side)
-        self.last_updated = ttk.Label(
-            header_frame,
-            text="Last updated: Never",
-            font=DarkTheme.SMALL_FONT,
-            background=DarkTheme.SECONDARY_BG
-        )
-        self.last_updated.pack(side=tk.RIGHT)
-        
-        # Legend frame
-        legend_frame = tk.Frame(self.content_frame, bg=DarkTheme.SECONDARY_BG)
-        legend_frame.pack(fill=tk.X, padx=DarkTheme.PADDING, pady=(5, 10))
-        
-        statuses = [("Running", DarkTheme.RUNNING_COLOR), 
-                   ("Pending", DarkTheme.PENDING_COLOR), 
-                   ("Completed", DarkTheme.COMPLETED_COLOR), 
-                   ("Failed", DarkTheme.FAILED_COLOR)]
-        
-        for status, color in statuses:
-            status_frame = tk.Frame(legend_frame, bg=DarkTheme.SECONDARY_BG)
-            status_frame.pack(side=tk.LEFT, padx=5)
-            
-            # Create small colored circle
-            canvas = tk.Canvas(status_frame, width=12, height=12, bg=DarkTheme.SECONDARY_BG, highlightthickness=0)
-            canvas.create_oval(2, 2, 10, 10, fill=color, outline="")
-            canvas.pack(side=tk.LEFT, padx=(0, 3))
-            
-            # Status label
-            ttk.Label(status_frame, text=status, background=DarkTheme.SECONDARY_BG).pack(side=tk.LEFT)
-        
-        # Create job list frame with scrollbar
-        job_list_container = tk.Frame(self.content_frame, bg=DarkTheme.SECONDARY_BG)
-        job_list_container.pack(fill=tk.BOTH, expand=True, padx=DarkTheme.PADDING)
-        
-        # Create treeview for jobs with custom styling
-        self.tree = CustomTreeview(
-            job_list_container, 
-            columns=("job_id", "name", "status", "time", "nodes", "cpus", "memory"), 
-            show="headings",
-            height=10
-        )
-        
-        # Configure headings
-        self.tree.heading("job_id", text="JOB ID")
-        self.tree.heading("name", text="NAME")
-        self.tree.heading("status", text="STATUS")
-        self.tree.heading("time", text="RUNTIME")
-        self.tree.heading("nodes", text="NODES")
-        self.tree.heading("cpus", text="CPUS")
-        self.tree.heading("memory", text="MEMORY")
-        
-        # Configure column widths
-        self.tree.column("job_id", width=80, anchor="center")
-        self.tree.column("name", width=150, anchor="w")
-        self.tree.column("status", width=90, anchor="center")
-        self.tree.column("time", width=80, anchor="center")
-        self.tree.column("nodes", width=60, anchor="center")
-        self.tree.column("cpus", width=60, anchor="center")
-        self.tree.column("memory", width=90, anchor="center")
-        
-        # Create custom scrollbar
-        scrollbar_style = ttk.Style()
-        scrollbar_style.configure("Custom.Vertical.TScrollbar", 
-                              background=DarkTheme.BG_COLOR, 
-                              troughcolor=DarkTheme.SECONDARY_BG, 
-                              borderwidth=0,
-                              arrowcolor=DarkTheme.TEXT_COLOR)
-        
-        scrollbar = ttk.Scrollbar(
-            job_list_container, 
-            orient="vertical", 
-            command=self.tree.yview,
-            style="Custom.Vertical.TScrollbar"
-        )
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        
-        # Pack tree and scrollbar
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Bottom control frame
-        control_frame = tk.Frame(self.content_frame, bg=DarkTheme.SECONDARY_BG)
-        control_frame.pack(fill=tk.X, pady=10, padx=DarkTheme.PADDING)
-        
-        # Refresh button
-        refresh_btn = ttk.Button(control_frame, text="Refresh", command=self.refresh_jobs)
-        refresh_btn.pack(side=tk.LEFT)
-        
-        # Login button
-        self.login_btn = ttk.Button(control_frame, text="Login", command=self.show_login_dialog)
-        self.login_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Auto-refresh checkbox with updated command
-        self.auto_refresh = tk.BooleanVar(value=True)
-        auto_refresh_cb = ttk.Checkbutton(
-            control_frame, 
-            text="Auto-refresh", 
-            variable=self.auto_refresh,
-            command=self.toggle_auto_refresh
-        )
-        auto_refresh_cb.pack(side=tk.LEFT, padx=5)
-        
-        # Refresh interval dropdown
-        ttk.Label(control_frame, text="Interval:", background=DarkTheme.SECONDARY_BG).pack(side=tk.LEFT, padx=(10, 0))
-        
-        self.refresh_options = {
-            "5 seconds": 5,
-            "30 seconds": 30,
-            "1 minute": 60,
-            "5 minutes": 300,
-            "10 minutes": 600,
-            "30 minutes": 1800
-        }
-        
-        self.refresh_var = tk.StringVar()
-        self.refresh_var.set("30 seconds")  # Default
-        
-        refresh_dropdown = ttk.Combobox(
-            control_frame, 
-            textvariable=self.refresh_var,
-            values=list(self.refresh_options.keys()),
-            state="readonly",
-            width=10
-        )
-        refresh_dropdown.pack(side=tk.LEFT, padx=5)
-        refresh_dropdown.bind("<<ComboboxSelected>>", self.change_refresh_interval)
-        
-        # Status summary
-        self.status_summary = ttk.Label(
-            control_frame,
-            text="Running: 0 | Pending: 0 | Completed: 0",
-            font=DarkTheme.SMALL_FONT,
-            background=DarkTheme.SECONDARY_BG
-        )
-        self.status_summary.pack(side=tk.RIGHT)
-        
-        # Refresh interval (in seconds)
-        self.refresh_interval = 30
-        self.refresh_timer = None
-        
-        # Start auto-refresh if enabled
+        # Start auto-refresh after GUI is built
         self.start_auto_refresh()
-        
-        # Show login dialog if no saved credentials
-        if not self.authenticated and not self.test_mode:
-            self.root.after(500, self.show_login_dialog)
     
-    def load_credentials(self):
-        """Load saved credentials if available"""
+    def setup_gui(self):
+        # Main frame
+        self.main_frame = tk.Frame(self.root, bg=DarkTheme.SECONDARY_BG)
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Header
+        header_frame = tk.Frame(self.main_frame, bg=DarkTheme.SECONDARY_BG)
+        header_frame.pack(fill=tk.X, pady=5)
+        
+        self.user_label = ttk.Label(header_frame, text="Not logged in", 
+                                  background=DarkTheme.SECONDARY_BG)
+        self.user_label.pack(side=tk.LEFT, padx=5)
+        
+        self.last_updated = ttk.Label(header_frame, text="Last updated: Never",
+                                    background=DarkTheme.SECONDARY_BG)
+        self.last_updated.pack(side=tk.RIGHT, padx=5)
+        
+        # Job tree
+        self.tree = CustomTreeview(self.main_frame, 
+                               columns=("job_id", "name", "status", "time", "nodes", "cpus", "memory"),
+                               show="headings", height=15)
+        self.init_tree_columns()
+        self.tree.pack(fill=tk.BOTH, expand=True)
+        
+        # Control frame
+        control_frame = tk.Frame(self.main_frame, bg=DarkTheme.SECONDARY_BG)
+        control_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(control_frame, text="Refresh", command=self.refresh_jobs).pack(side=tk.LEFT, padx=5)
+        self.login_btn = ttk.Button(control_frame, text="Login", command=self.handle_login)
+        self.login_btn.pack(side=tk.LEFT, padx=5)
+        ttk.Checkbutton(control_frame, text="Auto-refresh", variable=self.auto_refresh,
+                       command=self.toggle_auto_refresh).pack(side=tk.LEFT, padx=5)
+    
+    def init_tree_columns(self):
+        """Initialize tree columns and headings"""
+        # Configure all columns
+        columns_config = {
+            "job_id": {"width": 80, "text": "JOB ID", "anchor": "center"},
+            "name": {"width": 150, "text": "NAME", "anchor": "w"},
+            "status": {"width": 90, "text": "STATUS", "anchor": "center"},
+            "time": {"width": 80, "text": "RUNTIME", "anchor": "center"},
+            "nodes": {"width": 60, "text": "NODES", "anchor": "center"},
+            "cpus": {"width": 60, "text": "CPUS", "anchor": "center"},
+            "memory": {"width": 90, "text": "MEMORY", "anchor": "center"}
+        }
+        
+        # Apply configuration for each column
+        for col, config in columns_config.items():
+            self.tree.heading(col, text=config["text"])
+            self.tree.column(col, width=config["width"], anchor=config["anchor"])
+
+    def _load_credentials_async(self):
+        """Asynchronously load and test credentials"""
         try:
             if os.path.exists(self.config_file):
                 with open(self.config_file, 'r') as f:
                     config = json.load(f)
                     
                     if 'username' in config and 'hostname' in config:
-                        self.username = config['username']
-                        self.hostname = config['hostname']
+                        self.username = config.get('username', '')
+                        self.hostname = config.get('hostname', 'login.cluster.edu')
                         
                         # If password is saved
                         if 'password' in config:
-                            self.password = config['password']  # In a real implementation, this would be decrypted
+                            self.password = config.get('password', '')
                             
                             # Test connection with saved credentials
                             if self.test_connection():
                                 self.authenticated = True
-                                return True
+                                # Update UI in main thread
+                                self.root.after(0, lambda: self.update_login_status(True))
         except Exception as e:
             print(f"Error loading credentials: {e}")
+
+    def handle_login(self):
+        """Handle login button click - show dialog and process login"""
+        print("Login button clicked")
         
-        return False
-    
-    def save_credentials(self, credentials):
-        """Save credentials"""
-        try:
-            # Create config directory if it doesn't exist
-            if not os.path.exists(self.config_dir):
-                os.makedirs(self.config_dir)
+        # Create a new top-level window for login
+        login_window = tk.Toplevel(self.root)
+        login_window.title("HPC Login")
+        login_window.configure(bg=DarkTheme.BG_COLOR)
+        login_window.transient(self.root)
+        login_window.grab_set()  # Make window modal
+        
+        # Position the window
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 175
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 100
+        login_window.geometry(f"350x200+{x}+{y}")
+        
+        # Create frame
+        frame = RoundedFrame(login_window, width=330, height=180, corner_radius=DarkTheme.CORNER_RADIUS)
+        frame.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        
+        # Create content frame
+        content_frame = tk.Frame(frame, bg=DarkTheme.SECONDARY_BG)
+        content_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER, width=310, height=160)
+        
+        # Username
+        ttk.Label(content_frame, text="Username:", background=DarkTheme.SECONDARY_BG).grid(
+            row=0, column=0, sticky=tk.W, pady=5, padx=5)
+        username_entry = ttk.Entry(content_frame, width=25)
+        username_entry.grid(row=0, column=1, pady=5, padx=5)
+        username_entry.insert(0, self.username)
+        
+        # Password
+        ttk.Label(content_frame, text="Password:", background=DarkTheme.SECONDARY_BG).grid(
+            row=1, column=0, sticky=tk.W, pady=5, padx=5)
+        password_entry = ttk.Entry(content_frame, width=25, show="•")
+        password_entry.grid(row=1, column=1, pady=5, padx=5)
+        
+        # Hostname
+        ttk.Label(content_frame, text="Hostname:", background=DarkTheme.SECONDARY_BG).grid(
+            row=2, column=0, sticky=tk.W, pady=5, padx=5)
+        hostname_entry = ttk.Entry(content_frame, width=25)
+        hostname_entry.grid(row=2, column=1, pady=5, padx=5)
+        hostname_entry.insert(0, self.hostname)
+        
+        # Remember credentials
+        save_credentials = tk.BooleanVar(value=False)
+        ttk.Checkbutton(content_frame, text="Remember credentials", 
+                      variable=save_credentials,
+                      style="TCheckbutton").grid(
+            row=3, column=0, columnspan=2, pady=5, padx=5, sticky=tk.W)
+        
+        # Status label
+        status_label = ttk.Label(content_frame, text="", background=DarkTheme.SECONDARY_BG)
+        status_label.grid(row=4, column=0, columnspan=2, pady=5, padx=5)
+        
+        # Button frame
+        button_frame = tk.Frame(content_frame, bg=DarkTheme.SECONDARY_BG)
+        button_frame.grid(row=5, column=0, columnspan=2, pady=5, padx=5)
+        
+        def on_login():
+            """Handle login button click"""
+            # Get values
+            username = username_entry.get()
+            password = password_entry.get()
+            hostname = hostname_entry.get()
+            save = save_credentials.get()
             
-            config = {
-                "username": credentials['username'],
-                "hostname": credentials['hostname']
-            }
+            if not username or not password or not hostname:
+                status_label.config(text="Please fill in all fields", foreground="red")
+                return
             
-            if credentials['save']:
-                config["password"] = credentials['password']
+            # Update status
+            status_label.config(text="Connecting...", foreground=DarkTheme.TEXT_COLOR)
+            login_button.config(state="disabled")
+            cancel_button.config(state="disabled")
             
-            with open(self.config_file, 'w') as f:
-                json.dump(config, f)
-        except Exception as e:
-            print(f"Error saving credentials: {e}")
-            messagebox.showerror("Error", f"Could not save credentials: {e}")
-    
-    def show_login_dialog(self):
-        """Show the login dialog"""
-        dialog = LoginDialog(self.root, "HPC Login", default_username=self.username)
-        if hasattr(dialog, 'result') and dialog.result:
-            credentials = dialog.result
-            self.username = credentials['username']
-            self.password = credentials['password']
-            self.hostname = credentials['hostname']
+            # Process login in background thread
+            def process_login():
+                try:
+                    # Disconnect existing connection if any
+                    if self.authenticated:
+                        self.disconnect()
+                        self.authenticated = False
+                    
+                    # Update credentials
+                    self.username = username
+                    self.password = password
+                    self.hostname = hostname
+                    
+                    # Test connection
+                    connection_success = self.test_connection()
+                    
+                    # Update UI in main thread
+                    login_window.after(0, lambda: update_ui(connection_success, save))
+                except Exception as e:
+                    print(f"Login error: {e}")
+                    login_window.after(0, lambda: status_label.config(
+                        text=f"Error: {str(e)}", foreground="red"))
+                    login_window.after(0, lambda: login_button.config(state="normal"))
+                    login_window.after(0, lambda: cancel_button.config(state="normal"))
             
-            # Test connection
-            if self.test_connection():
-                self.authenticated = True
-                self.user_label.config(text=f"{self.username}@{self.hostname}")
-                self.login_btn.config(text="Change Login")
-                
-                # Save credentials if requested
-                if credentials['save']:
-                    self.save_credentials(credentials)
-                
-                # Refresh job list
-                self.refresh_jobs()
-            else:
-                self.authenticated = False
-                messagebox.showerror("Authentication Failed", "Could not authenticate with the provided credentials.")
-    
+            def update_ui(success, save):
+                if success:
+                    self.authenticated = True
+                    
+                    # Save credentials if requested
+                    if save:
+                        self.save_credentials({
+                            "username": username,
+                            "password": password if save else "",
+                            "hostname": hostname,
+                            "save": save
+                        })
+                    
+                    # Close login window
+                    login_window.destroy()
+                    
+                    # Update main UI
+                    self.update_login_status(True)
+                    self.refresh_jobs()
+                else:
+                    status_label.config(
+                        text="Authentication failed. Check credentials.", 
+                        foreground="red")
+                    login_button.config(state="normal")
+                    cancel_button.config(state="normal")
+            
+            # Start login process
+            threading.Thread(target=process_login, daemon=True).start()
+        
+        # Buttons
+        login_button = ttk.Button(button_frame, text="Login", command=on_login)
+        login_button.pack(side=tk.LEFT, padx=5)
+        
+        cancel_button = ttk.Button(button_frame, text="Cancel", 
+                                 command=login_window.destroy)
+        cancel_button.pack(side=tk.LEFT, padx=5)
+        
+        # Set focus to username entry
+        username_entry.focus_set()
+        
+        # Bind Enter key to login button
+        login_window.bind("<Return>", lambda event: on_login())
+        
+        # Bind Escape key to cancel
+        login_window.bind("<Escape>", lambda event: login_window.destroy())
+
     def test_connection(self):
         """Test SSH connection with the credentials"""
         if self.test_mode:
             return True  # Always return success in test mode
         
+        print(f"Attempting connection to {self.hostname}...")
         try:
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(
+            # Create new connection
+            ssh_client = paramiko.SSHClient()
+            ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            print("Initiating SSH connection...")
+            # Connect with timeout
+            ssh_client.connect(
                 hostname=self.hostname, 
                 username=self.username, 
                 password=self.password,
                 timeout=5
             )
-            client.close()
-            return True
+            
+            print("Testing connection with echo command...")
+            # Test a simple command
+            stdin, stdout, stderr = ssh_client.exec_command("echo Connection test successful")
+            result = stdout.read().decode().strip()
+            
+            print(f"Connection test result: {result}")
+            
+            # Store the client if successful
+            self.ssh_client = ssh_client
+            return "Connection test successful" in result
         except Exception as e:
-            print(f"Connection test failed: {e}")
+            print(f"Connection test failed with error: {e}")
             return False
     
     def run_remote_command(self, command):
@@ -637,20 +617,29 @@ class HPCJobMonitor:
             return ""
         
         try:
-            # Real SSH connection code here
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(
-                hostname=self.hostname,
-                username=self.username,
-                password=self.password
-            )
-            stdin, stdout, stderr = client.exec_command(command)
+            # Check if we have an active connection
+            if not self.ssh_client or not self.ssh_client.get_transport() or not self.ssh_client.get_transport().is_active():
+                # Reconnect if needed
+                if not self.test_connection():
+                    print("SSH connection lost and reconnection failed")
+                    self.update_login_status(False)
+                    self.authenticated = False
+                    return None
+            
+            # Execute command
+            stdin, stdout, stderr = self.ssh_client.exec_command(command)
             output = stdout.read().decode()
-            client.close()
+            error = stderr.read().decode()
+            
+            if error and not output:
+                print(f"Command error: {error}")
+                return None
+                
             return output
         except Exception as e:
             print(f"Error running remote command: {e}")
+            # Try to reconnect on next command
+            self.disconnect()
             return None
     
     def get_jobs(self):
@@ -692,7 +681,7 @@ class HPCJobMonitor:
         if not self.authenticated:
             if not self.test_mode:
                 messagebox.showinfo("Not Authenticated", "Please log in first")
-                self.show_login_dialog()
+                self.handle_login()
             return
         
         # Clear current items
@@ -732,24 +721,15 @@ class HPCJobMonitor:
                       f"Pending: {status_counts['pending']:2d} │ "
                       f"Completed: {status_counts['completed']:2d} │ "
                       f"Failed: {status_counts['failed']:2d}")
-            self.status_summary.config(text=summary)
+            self.last_updated.config(text=f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
             
             # Update timestamp
             now = datetime.now().strftime("%H:%M:%S")
-            self.last_updated.config(text=f"Updated: {now}")
+            self.user_label.config(text=f"{self.username}@{self.hostname}")
             
         except Exception as e:
             print(f"Error refreshing jobs: {e}")
             messagebox.showerror("Error", f"Failed to refresh jobs: {e}")
-    
-    def change_refresh_interval(self, event=None):
-        """Change the refresh interval based on dropdown selection"""
-        selected = self.refresh_var.get()
-        self.refresh_interval = self.refresh_options.get(selected, 30)
-        
-        # Restart auto-refresh with new interval if enabled
-        if self.auto_refresh.get():
-            self.start_auto_refresh()
     
     def toggle_auto_refresh(self):
         """Toggle auto-refresh on/off"""
@@ -782,6 +762,7 @@ class HPCJobMonitor:
     def on_closing(self):
         """Clean up before closing"""
         self.stop_auto_refresh()
+        self.disconnect()
         self.root.destroy()
 
     def start_drag(self, event):
@@ -796,6 +777,101 @@ class HPCJobMonitor:
         x = self.root.winfo_x() + deltax
         y = self.root.winfo_y() + deltay
         self.root.geometry(f"+{x}+{y}")
+
+    def _process_login_async(self, credentials):
+        """Process login credentials asynchronously"""
+        print("Processing login asynchronously")  # Debug print
+        try:
+            # Update credentials
+            self.username = credentials['username']
+            self.password = credentials['password']
+            self.hostname = credentials['hostname']
+            
+            print("Testing connection...")  # Debug print
+            # Show a "connecting" message
+            self.root.after(0, lambda: self.user_label.config(text="Connecting..."))
+            
+            # Test connection
+            connection_success = self.test_connection()
+            print(f"Connection test result: {connection_success}")  # Debug print
+            
+            # Update UI in the main thread
+            def update_ui():
+                print("Updating UI after connection test")  # Debug print
+                if connection_success:
+                    self.authenticated = True
+                    self.update_login_status(True)
+                    
+                    # Save credentials if requested
+                    if credentials['save']:
+                        print("Saving credentials")  # Debug print
+                        self.save_credentials(credentials)
+                    
+                    # Refresh job list
+                    self.refresh_jobs()
+                else:
+                    print("Authentication failed")  # Debug print
+                    self.authenticated = False
+                    self.update_login_status(False)
+                    messagebox.showerror("Authentication Failed", 
+                                       "Could not authenticate with the provided credentials.\n"
+                                       "Please check your username, password, and hostname.")
+            
+            self.root.after(0, update_ui)
+            
+        except Exception as e:
+            print(f"Login processing error: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Login Error", 
+                                                           f"An error occurred during login: {str(e)}"))
+
+    def save_credentials(self, credentials):
+        """Save credentials"""
+        try:
+            # Create config directory if it doesn't exist
+            if not os.path.exists(os.path.dirname(self.config_file)):
+                os.makedirs(os.path.dirname(self.config_file))
+            
+            config = {
+                "username": credentials['username'],
+                "hostname": credentials['hostname']
+            }
+            
+            if credentials['save']:
+                config["password"] = credentials['password']
+            
+            with open(self.config_file, 'w') as f:
+                json.dump(config, f)
+                
+            return True
+        except Exception as e:
+            print(f"Error saving credentials: {e}")
+            messagebox.showerror("Error", f"Could not save credentials: {e}")
+            return False
+
+    def update_login_status(self, is_logged_in):
+        """Update UI elements to reflect login status"""
+        if is_logged_in:
+            self.user_label.config(text=f"{self.username}@{self.hostname}")
+            self.login_btn.config(text="Change Login")
+            # Start auto-refresh if enabled
+            if self.auto_refresh.get():
+                self.start_auto_refresh()
+        else:
+            self.user_label.config(text="Not logged in")
+            self.login_btn.config(text="Login")
+            # Stop auto-refresh
+            self.stop_auto_refresh()
+    
+    def disconnect(self):
+        """Disconnect SSH client if connected"""
+        print("Disconnecting...")
+        try:
+            if self.ssh_client:
+                self.ssh_client.close()
+                self.ssh_client = None
+            print("Disconnected")
+        except Exception as e:
+            print(f"Error disconnecting: {e}")
 
 def main():
     # Parse command line arguments
