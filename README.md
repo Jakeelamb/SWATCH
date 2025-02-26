@@ -2,7 +2,7 @@
 
 A sleek, modern job monitoring tool for Slurm workload manager that doesn't make you want to pull your hair out! 
 
-![SWATCH Demo](assets/demo.gif)
+![SWATCH GUI](./Swatch_gui_readme.png)
 
 ## 🌟 Features
 
@@ -20,6 +20,7 @@ A sleek, modern job monitoring tool for Slurm workload manager that doesn't make
 
 | Flag | Description | Example |
 |------|-------------|---------|
+| `-h, --help` | Show help message and exit | `python slurm_watch.py --help` |
 | `-t, --test` | Run in test mode with sample data | `python slurm_watch.py --test` |
 
 ## 🎯 Job Status Colors
