@@ -16,17 +16,17 @@ import queue
 
 # Define a custom style theme class
 class DarkTheme:
-    # Main colors - Updated for softer look
-    BG_COLOR = "#2E2E3E"  # Lighter dark background
-    SECONDARY_BG = "#3F3F53"  # Softer secondary background
-    TEXT_COLOR = "#E0E0E8"  # Slightly brighter text
-    ACCENT_COLOR = "#7AA2F7"  # Softer blue accent
+    # Main colors - Softer macOS-like palette
+    BG_COLOR = "#333333"  # Lighter dark gray for background
+    SECONDARY_BG = "#404040"  # Slightly lighter secondary background
+    TEXT_COLOR = "#FFFFFF"  # White text for contrast
+    ACCENT_COLOR = "#007AFF"  # macOS blue for accents (like buttons and highlights)
     
-    # Status colors - Softer palette
-    RUNNING_COLOR = "#98D8A8"  # Softer green
-    PENDING_COLOR = "#F8B98F"  # Softer orange
-    COMPLETED_COLOR = "#7AA2F7"  # Softer blue
-    FAILED_COLOR = "#F08BA0"  # Softer red
+    # Status colors - Softer, macOS-like palette
+    RUNNING_COLOR = "#34C759"  # Soft green
+    PENDING_COLOR = "#FF9500"  # Soft orange
+    COMPLETED_COLOR = "#007AFF"  # Blue (same as accent)
+    FAILED_COLOR = "#FF3B30"  # Soft red
     
     # Title colors using status colors
     TITLE_COLORS = {
@@ -38,14 +38,14 @@ class DarkTheme:
         'H': TEXT_COLOR
     }
     
-    # Updated fonts and dimensions - Increased font sizes
-    MAIN_FONT = ("Helvetica Neue", 12)  # Increased from 11
-    HEADER_FONT = ("Helvetica Neue", 13, "bold")  # Increased from 12
-    SMALL_FONT = ("Helvetica Neue", 11)  # Increased from 10
+    # Updated fonts (macOS San Francisco-like)
+    MAIN_FONT = ("Helvetica Neue", 11)  # Default text
+    HEADER_FONT = ("Helvetica Neue", 13, "bold")  # Headings
+    SMALL_FONT = ("Helvetica Neue", 10)
     
     # Updated spacing
-    PADDING = 8  # Tighter spacing
-    CORNER_RADIUS = 6  # Softer rounding
+    PADDING = 10  # Consistent macOS padding
+    CORNER_RADIUS = 12  # Larger radius for smoother corners
     
     # Treeview configuration
     TREEVIEW_CONFIG = {
@@ -70,6 +70,7 @@ class RoundedFrame(tk.Canvas):
         
         # Bind resize event to redraw the rounded rectangle
         self.bind("<Configure>", self._on_resize)
+        self.create_rounded_rect()
         
     def _on_resize(self, event):
         self.update_idletasks()
@@ -78,6 +79,8 @@ class RoundedFrame(tk.Canvas):
     def create_rounded_rect(self):
         self.delete("all")
         width, height = self.winfo_width(), self.winfo_height()
+        # Add a subtle shadow effect
+        self.create_rounded_rectangle(2, 2, width-2, height-2, radius=self.corner_radius, fill=self.bg_color, outline="#1C1C1C", width=1)
         self.create_rounded_rectangle(0, 0, width, height, radius=self.corner_radius, fill=self.bg_color)
         
     def create_rounded_rectangle(self, x1, y1, x2, y2, radius=10, **kwargs):
@@ -109,29 +112,29 @@ class CustomTreeview(ttk.Treeview):
     def __init__(self, master, **kwargs):
         style = ttk.Style()
         
-        # Configure the main treeview style with updated colors and fonts
+        # Configure treeview with macOS-like styling
         style.configure("Custom.Treeview", 
             font=DarkTheme.MAIN_FONT,
             background=DarkTheme.SECONDARY_BG,
             foreground=DarkTheme.TEXT_COLOR,
             fieldbackground=DarkTheme.SECONDARY_BG,
             borderwidth=0,
-            rowheight=22  # Adjusted for new font
+            rowheight=24  # Slightly taller for macOS look
         )
         
-        # Configure the header style
+        # Configure header
         style.configure("Custom.Treeview.Heading",
-            font=DarkTheme.MAIN_FONT,
+            font=DarkTheme.HEADER_FONT,
             background=DarkTheme.BG_COLOR,
             foreground=DarkTheme.ACCENT_COLOR,
             borderwidth=0
         )
         
-        # Configure selection colors with alternating row colors
+        # Configure selection (subtle blue highlight like macOS)
         style.map("Custom.Treeview",
             background=[
                 ("selected", DarkTheme.ACCENT_COLOR),
-                ("!selected", ["#353544", DarkTheme.SECONDARY_BG])
+                ("!selected", ["#444444", DarkTheme.SECONDARY_BG])
             ],
             foreground=[("selected", DarkTheme.BG_COLOR)]
         )
@@ -144,9 +147,12 @@ class CustomStyle(ttk.Style):
         super().__init__()
         self.configure('TFrame', background=DarkTheme.BG_COLOR)
         self.configure('TLabel', background=DarkTheme.BG_COLOR, foreground=DarkTheme.TEXT_COLOR)
-        self.configure('TButton', background=DarkTheme.SECONDARY_BG, foreground=DarkTheme.TEXT_COLOR)
-        self.configure('TCheckbutton', background=DarkTheme.BG_COLOR, foreground=DarkTheme.TEXT_COLOR)
-        self.configure('TEntry', fieldbackground=DarkTheme.SECONDARY_BG, foreground=DarkTheme.TEXT_COLOR)
+        self.configure('TButton', background=DarkTheme.SECONDARY_BG, foreground=DarkTheme.TEXT_COLOR, font=DarkTheme.MAIN_FONT, borderwidth=1, relief="flat")
+        self.configure('TCheckbutton', background=DarkTheme.BG_COLOR, foreground=DarkTheme.TEXT_COLOR, font=DarkTheme.MAIN_FONT)
+        self.configure('TEntry', fieldbackground=DarkTheme.SECONDARY_BG, foreground=DarkTheme.TEXT_COLOR, font=DarkTheme.MAIN_FONT)
+        
+        # Add hover effect for buttons
+        self.map('TButton', background=[('active', DarkTheme.ACCENT_COLOR)], foreground=[('active', DarkTheme.BG_COLOR)])
 
 class LoginDialog(simpledialog.Dialog):
     def __init__(self, parent, title=None, default_username="", default_hostname="login.cluster.edu"):
@@ -349,6 +355,14 @@ class HPCJobMonitor:
         # Load saved credentials
         self.config_file = os.path.join(os.path.expanduser("~"), ".hpcjobmonitor", "config.json")
         self._load_credentials_async()
+        
+        # Configure scrollbar style
+        scrollbar_style = ttk.Style()
+        scrollbar_style.configure("Custom.Vertical.TScrollbar", 
+                                background=DarkTheme.SECONDARY_BG, 
+                                troughcolor=DarkTheme.BG_COLOR, 
+                                borderwidth=0,
+                                arrowcolor=DarkTheme.TEXT_COLOR)
         
         # Build GUI
         self.setup_gui()
