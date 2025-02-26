@@ -14,14 +14,39 @@ A sleek, modern job monitoring tool for Slurm workload manager that doesn't make
 - 🎮 Drag-and-drop window movement
 - 🧪 Test mode for demos and development
 
-## 🚀 Quick Start
+## 📦 Installation
+
+### Using pip
+
+```bash
+pip install swatch-slurm
+```
+
+### Development Installation
+```bash
+git clone https://github.com/Jakeelamb/SWATCH.git
+cd SWATCH
+pip install -e ".[dev]"
+```
+
+## 🚀 Usage
+
+After installation, simply run the tool using the `swatch` command:
+
+```bash
+# Run SWATCH with normal mode
+swatch
+
+# Run SWATCH in test mode
+swatch --test
+```
 
 ## 🎮 Command Line Options
 
 | Flag | Description | Example |
 |------|-------------|---------|
-| `-h, --help` | Show help message and exit | `python slurm_watch.py --help` |
-| `-t, --test` | Run in test mode with sample data | `python slurm_watch.py --test` |
+| `-h, --help` | Show help message and exit | `swatch --help` |
+| `-t, --test` | Run in test mode with sample data | `swatch --test` |
 
 ## 🎯 Job Status Colors
 
@@ -82,23 +107,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 
 Remember: Happy monitoring! 🚀
-
-## 📦 Installation
-
-### Using pip
-
-```bash
-pip install swatch-slurm
-```
-
-### Using conda
-```bash
-conda install -c conda-forge swatch-slurm
-```
-
-### Development Installation
-```bash
-git clone https://github.com/yourusername/swatch.git
-cd swatch
-pip install -e ".[dev]"
-```
