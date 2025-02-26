@@ -1,0 +1,54 @@
+{% set name = "swatch-slurm" %}
+{% set version = "0.1.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  sha256: [paste your SHA256 hash here]  # Update this with your actual hash
+
+build:
+  number: 0
+  noarch: python
+  script: {{ PYTHON }} -m pip install . -vv
+  entry_points:
+    - swatch = swatch.slurm_watch:main
+
+requirements:
+  host:
+    - python >=3.8
+    - pip
+    - hatchling
+  run:
+    - python >=3.8
+    - pillow >=10.0.0
+    - paramiko >=3.4.0
+    - tk
+
+test:
+  imports:
+    - swatch
+  commands:
+    - pip check
+    - swatch --help
+  requires:
+    - pip
+
+about:
+  home: https://github.com/Jakeelamb/swatch
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  summary: A sleek, modern job monitoring tool for Slurm workload manager
+  description: |
+    SWATCH (Slurm Watch) is a modern, user-friendly GUI tool for monitoring
+    Slurm jobs. It provides real-time updates, status-based color coding,
+    and secure SSH authentication.
+  doc_url: https://swatch-slurm.readthedocs.io/
+  dev_url: https://github.com/Jakeelamb/swatch
+
+extra:
+  recipe-maintainers:
+    - Jakeelamb 
