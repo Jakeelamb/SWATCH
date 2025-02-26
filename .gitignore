@@ -1,0 +1,5 @@
+.hpcjobmonitor/
+.hpcjobmonitor/
+.hpcjobmonitor/*
+*/.hpcjobmonitor/
+config.json
